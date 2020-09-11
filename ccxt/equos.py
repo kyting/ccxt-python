@@ -89,7 +89,6 @@ class equos(Exchange):
                 },
                 'private': {
                     'post': [
-                        'logon',
                         'getPositions',
                         'order',
                         'getOrderStatus',
@@ -280,22 +279,10 @@ class equos(Exchange):
             raise ArgumentsRequired(self.id + ': Order does not have enough arguments')
         request = self.create_order_request(market, type, side, amount, price, params)
         order = self.privatePostOrder(request)
-        # HACK: to call twice, will not get merged by kroitor it seems
-        # TODO: Remove before making a pull request
-        for i in range(0, 10):
-            try:
-                fetchedOrders = self.fetch_orders(symbol)
-                fetchedOrderDetails = None
-                # Have to do a find because we can't use JS methods
-                for j in range(0, len(fetchedOrders)):
-                    if fetchedOrders[j]['info']['clOrdId'] == order['clOrdId']:
-                        fetchedOrderDetails = fetchedOrders[j]
-                        break
-                if fetchedOrderDetails is not None:
-                    return fetchedOrderDetails
-            except Exception as err:
-                raise OrderNotFound('Error found while trying to access details for order. ', order['clOrdId'])
-        raise OrderNotFound('clOrdId %o cannot be found.', order['clOrdId'])
+        return {
+            'id': self.safe_string(order, 'orderId'),
+            'info': order,
+        }
 
     def create_order_request(self, market, type, side, amount, price=None, params={}):
         if price is None:
@@ -318,6 +305,7 @@ class equos(Exchange):
             'price_scale': price_scale,
             'quantity': self.convert_to_scale(amount, amount_scale),
             'quantity_scale': amount_scale,
+            'blockWaitAck': 1,
         }
         return self.extend(request, params)
 
@@ -1149,3 +1137,4 @@ class equos(Exchange):
                 body = self.json(params)
         url = self.urls['api'][api] + query
         return {'url': url, 'method': method, 'body': body, 'headers': headers}
+
