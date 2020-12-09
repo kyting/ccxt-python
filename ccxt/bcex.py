@@ -18,7 +18,7 @@ class bcex(Exchange):
         return self.deep_extend(super(bcex, self).describe(), {
             'id': 'bcex',
             'name': 'BCEX',
-            'countries': ['CN', 'CA'],
+            'countries': ['CN', 'HK'],
             'version': '1',
             'has': {
                 'cancelOrder': True,
@@ -105,6 +105,7 @@ class bcex(Exchange):
                 '订单信息不存在': OrderNotFound,  # {'code': 1, 'msg': '订单信息不存在'} - 'Order information does not exist'
             },
             'commonCurrencies': {
+                'UNI': 'UNI COIN',
                 'PNT': 'Penta',
             },
             'options': {
@@ -533,8 +534,10 @@ class bcex(Exchange):
             'lastTradeTimestamp': None,
             'symbol': symbol,
             'type': type,
+            'timeInForce': None,
             'side': side,
             'price': price,
+            'stopPrice': None,
             'cost': cost,
             'average': average,
             'amount': amount,

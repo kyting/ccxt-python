@@ -5,6 +5,7 @@
 
 from ccxt.async_support.base.exchange import Exchange
 import hashlib
+import math
 from ccxt.base.errors import ArgumentsRequired
 from ccxt.base.errors import BadRequest
 from ccxt.base.errors import BadSymbol
@@ -122,6 +123,7 @@ class equos(Exchange):
         # we need currency to parse market
         if self.currencies_by_id is None:
             await self.fetch_currencies()
+        params['verbose'] = True
         response = await self.publicGetGetInstrumentPairs(params)
         markets = []
         results = self.safe_value(response, 'instrumentPairs', [])
@@ -279,22 +281,24 @@ class equos(Exchange):
             raise ArgumentsRequired(self.id + ': Order does not have enough arguments')
         request = self.create_order_request(market, type, side, amount, price, params)
         order = await self.privatePostOrder(request)
-        # HACK: to call twice, will not get merged by kroitor it seems
-        # TODO: Remove before making a pull request
-        for i in range(0, 10):
-            try:
-                fetchedOrders = await self.fetch_orders(symbol)
-                fetchedOrderDetails = None
-                # Have to do a find because we can't use JS methods
-                for j in range(0, len(fetchedOrders)):
-                    if fetchedOrders[j]['info']['clOrdId'] == order['clOrdId']:
-                        fetchedOrderDetails = fetchedOrders[j]
-                        break
-                if fetchedOrderDetails is not None:
-                    return fetchedOrderDetails
-            except Exception as err:
-                raise OrderNotFound('Error found while trying to access details for order. ', order['clOrdId'])
-        raise OrderNotFound('clOrdId %o cannot be found.', order['clOrdId'])
+        return {
+            'id': self.safe_string(order, 'orderId'),
+            'info': order,
+        }
+
+    async def create_shadow_order(self, symbol, type, side, amount, price=None, isHidden=False, params={}):
+        await self.load_markets()
+        market = self.market(symbol)
+        if type is None or side is None or amount is None:
+            raise ArgumentsRequired(self.id + ': Order does not have enough arguments')
+        request = self.create_order_request(market, type, side, amount, price, params)
+        request['targetStrategy'] = 99
+        request['isHidden'] = isHidden
+        order = await self.privatePostOrder(request)
+        return {
+            'id': self.safe_string(order, 'orderId'),
+            'info': order,
+        }
 
     def create_order_request(self, market, type, side, amount, price=None, params={}):
         if price is None:
@@ -317,6 +321,7 @@ class equos(Exchange):
             'price_scale': price_scale,
             'quantity': self.convert_to_scale(amount, amount_scale),
             'quantity_scale': amount_scale,
+            'blockWaitAck': 1,
         }
         return self.extend(request, params)
 
@@ -352,16 +357,10 @@ class equos(Exchange):
 
     async def cancel_order(self, id, symbol=None, params={}):
         if symbol is None:
-            raise ArgumentsRequired(self.id + ' fetchOrder requires a symbol argument')
-        # NOTE: We need to fetch order because we need to obtain the symbol id and clientOrderId
-        order = await self.fetch_order(id, symbol, params)
-        if self.safe_string(order, 'status') != 'open':
-            raise OrderNotFound(self.id + ': order id ' + id + ' is not found in open order')
+            raise ArgumentsRequired(self.id + ' cancelOrder requires a symbol argument')
         await self.load_markets()
-        clientOrderId = order['clientOrderId']
-        # Equos' API requires the clOrdId and clOrdId
         request = {}
-        request['clOrdId'] = clientOrderId
+        request['origOrderId'] = id
         request['instrumentId'] = self.market(symbol)['id']
         # The API gives back the wrong response without proper id, price, etc.
         # Therefore, we just return the ID
@@ -694,13 +693,13 @@ class equos(Exchange):
         return orderResult
 
     def parse_market(self, market):
-        id = market[0]  # instrumentId
-        symbol = market[1]  # symbol
+        id = market['instrumentId']  # instrumentId
+        symbol = market['symbol']  # symbol
         splitSymbol = symbol.split('/')
         base = splitSymbol[0].lower()
         quote = splitSymbol[1].lower()
-        baseId = market[3]  # baseId
-        quoteId = market[2]  # quotedId
+        baseId = market['baseId']  # baseId
+        quoteId = market['quoteId']  # quotedId
         baseCurrency = self.safe_value(self.currencies_by_id, baseId)
         quoteCurrency = self.safe_value(self.currencies_by_id, quoteId)
         if baseCurrency is not None:
@@ -709,16 +708,16 @@ class equos(Exchange):
             quote = quoteCurrency['code']
         # status
         active = False
-        if market[6] == 1:
+        if market['securityStatus'] == 1:
             active = True
         precision = {
-            'amount': market[5],  # quantity_scale
-            'price': market[4],  # price_scale
+            'amount': int(round(-math.log10(market['minTradeVol']))),  # tie amount precision to minimum amount value
+            'price': market['price_scale'],  # price_scale
             'cost': None,
         }
         limits = {
             'amount': {
-                'min': None,
+                'min': market['minTradeVol'],
                 'max': None,
             },
             'price': {

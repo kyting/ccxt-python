@@ -5,6 +5,7 @@
 
 from ccxt.base.exchange import Exchange
 import hashlib
+import math
 from ccxt.base.errors import ArgumentsRequired
 from ccxt.base.errors import BadRequest
 from ccxt.base.errors import BadSymbol
@@ -122,6 +123,7 @@ class equos(Exchange):
         # we need currency to parse market
         if self.currencies_by_id is None:
             self.fetch_currencies()
+        params['verbose'] = True
         response = self.publicGetGetInstrumentPairs(params)
         markets = []
         results = self.safe_value(response, 'instrumentPairs', [])
@@ -284,6 +286,20 @@ class equos(Exchange):
             'info': order,
         }
 
+    def create_shadow_order(self, symbol, type, side, amount, price=None, isHidden=False, params={}):
+        self.load_markets()
+        market = self.market(symbol)
+        if type is None or side is None or amount is None:
+            raise ArgumentsRequired(self.id + ': Order does not have enough arguments')
+        request = self.create_order_request(market, type, side, amount, price, params)
+        request['targetStrategy'] = 99
+        request['isHidden'] = isHidden
+        order = self.privatePostOrder(request)
+        return {
+            'id': self.safe_string(order, 'orderId'),
+            'info': order,
+        }
+
     def create_order_request(self, market, type, side, amount, price=None, params={}):
         if price is None:
             price = 0
@@ -341,16 +357,10 @@ class equos(Exchange):
 
     def cancel_order(self, id, symbol=None, params={}):
         if symbol is None:
-            raise ArgumentsRequired(self.id + ' fetchOrder requires a symbol argument')
-        # NOTE: We need to fetch order because we need to obtain the symbol id and clientOrderId
-        order = self.fetch_order(id, symbol, params)
-        if self.safe_string(order, 'status') != 'open':
-            raise OrderNotFound(self.id + ': order id ' + id + ' is not found in open order')
+            raise ArgumentsRequired(self.id + ' cancelOrder requires a symbol argument')
         self.load_markets()
-        clientOrderId = order['clientOrderId']
-        # Equos' API requires the clOrdId and clOrdId
         request = {}
-        request['clOrdId'] = clientOrderId
+        request['origOrderId'] = id
         request['instrumentId'] = self.market(symbol)['id']
         # The API gives back the wrong response without proper id, price, etc.
         # Therefore, we just return the ID
@@ -683,13 +693,13 @@ class equos(Exchange):
         return orderResult
 
     def parse_market(self, market):
-        id = market[0]  # instrumentId
-        symbol = market[1]  # symbol
+        id = market['instrumentId']  # instrumentId
+        symbol = market['symbol']  # symbol
         splitSymbol = symbol.split('/')
         base = splitSymbol[0].lower()
         quote = splitSymbol[1].lower()
-        baseId = market[3]  # baseId
-        quoteId = market[2]  # quotedId
+        baseId = market['baseId']  # baseId
+        quoteId = market['quoteId']  # quotedId
         baseCurrency = self.safe_value(self.currencies_by_id, baseId)
         quoteCurrency = self.safe_value(self.currencies_by_id, quoteId)
         if baseCurrency is not None:
@@ -698,16 +708,16 @@ class equos(Exchange):
             quote = quoteCurrency['code']
         # status
         active = False
-        if market[6] == 1:
+        if market['securityStatus'] == 1:
             active = True
         precision = {
-            'amount': market[5],  # quantity_scale
-            'price': market[4],  # price_scale
+            'amount': int(round(-math.log10(market['minTradeVol']))),  # tie amount precision to minimum amount value
+            'price': market['price_scale'],  # price_scale
             'cost': None,
         }
         limits = {
             'amount': {
-                'min': None,
+                'min': market['minTradeVol'],
                 'max': None,
             },
             'price': {
@@ -1137,4 +1147,3 @@ class equos(Exchange):
                 body = self.json(params)
         url = self.urls['api'][api] + query
         return {'url': url, 'method': method, 'body': body, 'headers': headers}
-
